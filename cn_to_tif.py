@@ -32,6 +32,3 @@ for idx, file in enumerate(cn_files, start=1):
     })
 
 print("Conversion finished! All .nc files saved as .tif in:", output_folder)
-print("Conversion finished! All .nc files saved as .tif in:", output_folder)
-print("Conversion finished! All .nc files saved as .tif in:", output_folder)
-print("Conversion finished! All .nc files saved as .tif in:", output_folder)
