@@ -2,8 +2,8 @@ import os
 import processing
 
 # === INPUT AND OUTPUT FOLDERS ===
-input_folder = r"D:\Lewis\Scientific Articles\Urgent\15671260 erthwardphen_asynch-Publication\Global_SIF_OCO2_MODIS_1863\data"
-output_folder = r"D:\Lewis\Scientific Articles\Urgent\sif TIF"
+input_folder = r"D:\Lewis\Global phenology maping\Global_SIF_OCO2_MODIS_1863\data"
+output_folder = r"D:\Lewis\Global phenology maping\output_phen\sif TIF"
 
 # Make sure output folder exists
 os.makedirs(output_folder, exist_ok=True)
