@@ -1,0 +1,226 @@
+#!/usr/bin/env python3
+# ...existing code...
+import os
+import sys
+import glob
+import subprocess
+import shlex
+import argparse
+import pandas as pd
+import rasterio as rio
+import ee
+
+def initialize_ee(project=None):
+    try:
+        if project:
+            ee.Initialize(project=project)
+        else:
+            ee.Initialize()
+    except Exception:
+        ee.Authenticate()
+        if project:
+            ee.Initialize(project=project)
+        else:
+            ee.Initialize()
+
+def print_err(msg):
+    print(f"ERROR: {msg}", file=sys.stderr)
+
+# Command-line arguments
+parser = argparse.ArgumentParser(description='Upload GeoTIFFs to GCS and Earth Engine')
+parser.add_argument('dataset', nargs='?', default='sif', help="Dataset key (default: 'sif')")
+parser.add_argument('--run', action='store_true', help='Actually run earthengine upload (otherwise dry-run)')
+parser.add_argument('--upload-gcs', dest='upload_gcs', action='store_true', help='Copy local TIFFs to GCS before uploading to EE')
+parser.add_argument('--bucket', dest='bucket', default=None, help="Override GCS bucket path (format: bucket/path or bucket). Overrides gc_bucket_dict in the script")
+parser.add_argument('--gcp-project', dest='gcp_project', default=None, help='Optional GCP project to initialize ee with')
+parser.add_argument('--limit', dest='limit', type=int, default=0, help='Limit processing to first N files (0 = all)')
+parser.add_argument('--use-legacy', dest='use_legacy', action='store_true', help='Use legacy user assets path (users/<name>/...) instead of project assets')
+args = parser.parse_args()
+
+dataset = args.dataset.lower()
+assert dataset in ['sif'], "Valid datasets include: 'sif'."
+
+# --- CONFIGURE THESE BEFORE RUNNING ---
+# IMPORTANT: gc_bucket must start with your GCS bucket name (no gs://). Example:
+#    "my-gcs-bucket/seasonality_data/OCO2_SIF_ANN"
+gc_bucket_dict = {'sif': "your-gcs-bucket-name/seasonality_data/OCO2_SIF_ANN"}
+gc_bucket = gc_bucket_dict[dataset]
+# Allow CLI override of the bucket
+if args.bucket:
+    gc_bucket = args.bucket
+if gc_bucket.startswith("gs://"):
+    gc_bucket = gc_bucket[len("gs://"):]
+
+# Image collection (GEE path)
+# Use legacy user assets path so uploaded images appear under Legacy Assets -> users/lewiskhu
+# in the Earth Engine Code Editor.
+# Default to project assets (recommended). Use --use-legacy to upload to legacy user assets.
+project_asset_base = 'projects/phenologymapping/assets/seasonality_data'
+legacy_asset_base = 'users/lewiskhu/seasonality_data'
+img_coll_dict = {'sif': project_asset_base}
+img_coll = img_coll_dict[dataset]
+
+# Honor legacy flag
+if args.use_legacy:
+    img_coll = legacy_asset_base
+
+str_prov_dict = {'sif': "(string)provider=Oak Ridge National Laboratory (ORNL) Distributed Active Archive Center (DAAC)"}
+str_prov = str_prov_dict[dataset]
+
+url_dict = {'sif': "(string)URL=https://daac.ornl.gov/VEGETATION/guides/Global_High_Res_SIF_OCO2.html"}
+url = url_dict[dataset]
+
+# Local folder with .tif files
+data_dir_dict = {'sif': r"D:\Lewis\Global phenology maping\output_phen\sif TIF"}
+data_dir = data_dir_dict[dataset]
+
+# metadata CSV (relative to data_dir)
+df_file_dict = {'sif': 'SIF_OCO2_ANN_upload_metadata.csv'}
+df_file = df_file_dict[dataset]
+
+# CRS
+crs_dict = {'sif': 'EPSG:4326'}
+crs = crs_dict[dataset]
+
+# Flags
+do_run = bool(args.run)        # actually run earthengine upload
+upload_to_gcs = bool(args.upload_gcs)  # copy local tifs to GCS using gsutil before upload
+gcp_project = args.gcp_project  # optionally set GCP project for ee.Initialize(project=...)
+limit = int(args.limit or 0)
+
+# Safety checks
+if "your-gcs-bucket-name" in gc_bucket:
+    # If bucket wasn't overridden on the command line, give the user a chance to enter one
+    if args.bucket:
+        # args.bucket already applied above; this branch is unlikely but keep for clarity
+        pass
+    else:
+        try:
+            resp = input("GCS bucket not set in script. Enter bucket (format: bucket or bucket/path) or press Enter to continue dry-run: ").strip()
+        except Exception:
+            resp = ''
+        if resp:
+            gc_bucket = resp
+        else:
+            # Continue in dry-run mode but don't exit; user can re-run with --bucket or edit the script
+            print_err("GCS bucket not set; continuing in dry-run mode (no uploads will be performed). To run uploads, provide a bucket via --bucket or edit gc_bucket_dict and run with --run.")
+            do_run = False
+
+if not os.path.isdir(data_dir):
+    print_err(f"Data directory not found: {data_dir}")
+    sys.exit(1)
+
+csv_path = os.path.join(data_dir, df_file)
+if not os.path.isfile(csv_path):
+    print_err(f"Metadata CSV not found: {csv_path}")
+    sys.exit(1)
+
+# NOTE: earthengine CLI authentication is required only for actual uploads (--run).
+# We avoid calling ee.Initialize for dry-runs. If --run is provided, initialize
+# Earth Engine (optionally with --gcp-project) so uploads will execute.
+if do_run:
+    try:
+        if gcp_project:
+            ee.Initialize(project=gcp_project)
+        else:
+            # Try initialize with default credentials; will raise if not authenticated
+            ee.Initialize()
+    except Exception:
+        # Attempt interactive authentication (falls back to web flow)
+        ee.Authenticate()
+        if gcp_project:
+            ee.Initialize(project=gcp_project)
+        else:
+            ee.Initialize()
+
+df = pd.read_csv(csv_path)
+
+tif_files = sorted(glob.glob(os.path.join(data_dir, '*.tif')))
+if not tif_files:
+    print_err(f"No .tif files found in {data_dir}")
+    sys.exit(1)
+
+count = 0
+for f in tif_files:
+    try:
+        ds = rio.open(f)
+        nodata_val = ds.nodata
+        ds.close()
+    except Exception as e:
+        print_err(f"Cannot open {f}: {e}")
+        continue
+
+    basename = os.path.splitext(os.path.basename(f))[0]
+    row = df[df['id_no'] == basename]
+    print(f'NOW PROCESSING: {basename}...')
+
+    if row.empty:
+        print(f"WARNING: No metadata row matching id_no == {basename}; skipping.")
+        continue
+
+    # Expect timestamps in ISO format or milliseconds; the earthengine CLI expects ISO-ish strings
+    start = str(row['system:time_start'].values[0])
+    end = str(row['system:time_end'].values[0])
+
+    asset = f"{img_coll}/{basename}"
+    gs_path = f"gs://{gc_bucket}/{os.path.basename(f)}"
+
+    # Optionally upload to GCS first
+    if upload_to_gcs:
+        gsutil_cmd = ['gsutil', 'cp', f, gs_path]
+        print("Uploading to GCS:", " ".join(shlex.quote(p) for p in gsutil_cmd))
+        if do_run:
+            try:
+                proc = subprocess.run(gsutil_cmd, check=False, capture_output=True, text=True)
+                if proc.returncode != 0:
+                    print_err(f"gsutil failed: {proc.stderr.strip()}")
+                    continue
+                else:
+                    print(proc.stdout.strip())
+            except FileNotFoundError:
+                print_err("gsutil not found. Install Google Cloud SDK and make sure 'gsutil' is on PATH.")
+                sys.exit(1)
+        else:
+            print("Dry-run: not actually uploading to GCS (provide --run to execute).")
+
+    # Build earthengine CLI command
+    cmd = [
+        "earthengine", "upload", "image",
+        "--asset_id", asset,
+        "--pyramiding_policy", "mean",
+        "--time_start", start,
+        "--time_end", end,
+        "--property", str_prov,
+        "--property", url,
+        "--crs", crs,
+    ]
+    if nodata_val is not None:
+        cmd += ["--nodata_value", str(nodata_val)]
+    cmd.append(gs_path)
+
+    pretty = " ".join(shlex.quote(x) for x in cmd)
+    print("Prepared earthengine command:")
+    print(pretty)
+    print("-" * 60)
+
+    if do_run:
+        try:
+            proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
+            print(proc.stdout.strip())
+            if proc.returncode != 0:
+                print_err(f"earthengine upload failed (exit {proc.returncode}):\n{proc.stderr.strip()}")
+            else:
+                print(f"Upload started for {basename}. Check the Earth Engine Tasks or `earthengine ls {img_coll}`.")
+        except FileNotFoundError:
+            print_err("earthengine CLI not found. Install the Earth Engine CLI (`pip install earthengine-api`) and run `earthengine authenticate`.")
+            sys.exit(1)
+
+    count += 1
+    if limit and count >= limit:
+        print(f"Reached limit of {limit} files; stopping.")
+        break
+
+print("\nDone.")
+print("- To actually run uploads: add the flags --run (and --upload-gcs to copy files to GCS first).")
+print("- Ensure your GCS bucket exists and your authenticated account has access.")
+# ...existing code...

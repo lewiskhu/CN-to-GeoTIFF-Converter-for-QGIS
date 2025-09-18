@@ -1,0 +1,127 @@
+#!/usr/bin/python
+
+# ...existing code...
+import os
+import sys
+import glob
+import subprocess
+import pandas as pd
+import rasterio as rio
+
+def print_err(msg):
+    print(f"ERROR: {msg}", file=sys.stderr)
+
+# Get dataset from command line args (default 'sif')
+dataset = sys.argv[1].lower() if len(sys.argv) > 1 else 'sif'
+assert dataset in ['sif'], 'Valid datasets include: "sif".'
+
+# --- User-adjustable/static variables ---
+# NOTE: set this to your real GCS bucket path *without* the gs:// prefix,
+# e.g. "my-bucket/seasonality_data/OCO2_SIF_ANN"
+gc_bucket_dict = {'sif': "your-gcs-bucket-name/seasonality_data/OCO2_SIF_ANN"}
+gc_bucket = gc_bucket_dict[dataset]
+if gc_bucket.startswith("gs://"):
+    gc_bucket = gc_bucket[len("gs://"):]
+
+img_coll_dict = {'sif': "users/lewiskhu/PhenologyMapping"}
+img_coll = img_coll_dict[dataset]
+
+str_prov_dict = {'sif': "(string)provider=Oak Ridge National Laboratory (ORNL) Distributed Active Archive Center (DAAC)"}
+str_prov = str_prov_dict[dataset]
+
+url_dict = {'sif': "(string)URL=https://daac.ornl.gov/VEGETATION/guides/Global_High_Res_SIF_OCO2.html"}
+url = url_dict[dataset]
+
+# set the data directory (local folder with .tif files)
+data_dir_dict = {'sif': r"D:\Lewis\Global phenology maping\output_phen\sif TIF"}
+data_dir = data_dir_dict[dataset]
+
+# metadata CSV (filename inside data_dir)
+df_file_dict = {'sif': 'SIF_OCO2_ANN_upload_metadata.csv'}
+df_file = df_file_dict[dataset]
+
+# CRS for properties (kept for CLI or notes)
+crs_dict = {'sif': 'EPSG:4326'}
+crs = crs_dict[dataset]
+
+# optional: actually run the upload command if '--run' passed
+do_run = '--run' in sys.argv
+
+# Basic checks
+if not os.path.isdir(data_dir):
+    print_err(f"Data directory not found: {data_dir}")
+    sys.exit(1)
+
+csv_path = os.path.join(data_dir, df_file)
+if not os.path.isfile(csv_path):
+    print_err(f"Metadata CSV not found: {csv_path}")
+    sys.exit(1)
+
+df = pd.read_csv(csv_path)
+
+# Iterate .tif files
+tif_files = sorted(glob.glob(os.path.join(data_dir, '*.tif')))
+if not tif_files:
+    print_err(f"No .tif files found in {data_dir}")
+    sys.exit(1)
+
+for f in tif_files:
+    try:
+        ds = rio.open(f)
+        nodata_val = ds.nodata
+    except Exception as e:
+        print_err(f"Cannot open {f}: {e}")
+        continue
+
+    basename = os.path.splitext(os.path.basename(f))[0]
+    row = df[df['id_no'] == basename]
+    print(f'NOW PROCESSING: {basename}...')
+
+    if row.empty:
+        print(f"WARNING: No metadata row matching id_no == {basename}; skipping.")
+        continue
+
+    start = str(row['system:time_start'].values[0])
+    end = str(row['system:time_end'].values[0])
+
+    asset = f"{img_coll}/{basename}"
+
+    # Build full GCS path for the file (user must upload the file to this GCS location beforehand)
+    gs_path = f"gs://{gc_bucket}/{os.path.basename(f)}"
+
+    # Build earthengine CLI command (expects file already in GCS)
+    cmd = (
+        'earthengine upload image '
+        f'--asset_id="{asset}" '
+        f'--pyramiding_policy=mean '
+        f'--time_start="{start}" --time_end="{end}" '
+        f'--property="{str_prov}" --property="{url}" '
+        f'--nodata_value={nodata_val if nodata_val is not None else "None"} '
+        f'--crs={crs} '
+        f'"{gs_path}"'
+    )
+
+    # Print the command (safe) and optionally run it
+    print("Prepared command:")
+    print(cmd)
+    print('-' * 60)
+
+    if do_run:
+        print("Running command...")
+        try:
+            # Use subprocess so we get exit code/output
+            proc = subprocess.run(cmd, shell=True, check=False, capture_output=True, text=True)
+            print(proc.stdout)
+            if proc.returncode != 0:
+                print_err(f"Command failed (exit {proc.returncode}):\n{proc.stderr}")
+            else:
+                print(f"Upload command executed for {basename}.")
+        except Exception as e:
+            print_err(f"Failed to run command for {basename}: {e}")
+
+print("\nDone. Notes:")
+print("- Ensure your GeoTIFF files are uploaded to the specified GCS path (gs://{bucket}/...).")
+print("- Replace 'your-gcs-bucket-name' above with your real bucket name.")
+print("- Authenticate with Earth Engine and ensure the CLI is installed: `pip install earthengine-api` and `earthengine authenticate`.")
+print("- To actually run the CLI upload from this script add the --run flag: python upload...py sif --run")
+# ...existing code...
