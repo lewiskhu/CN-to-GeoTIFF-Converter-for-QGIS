@@ -44,7 +44,7 @@ i    try:
             assetId=asset.replace("\\", "/"),
             region=img.geometry(),
             maxPixels=1e13,
-            pyramidingPolicy={".*": "MEAN"})rth Engine image
+            pyramidingPolicy={".*": "MEAN"})
         img = ee.Image.loadGeoTIFF(f)
         
         # Set the properties
@@ -63,7 +63,7 @@ i    try:
             assetId=asset.replace("\\", "/"),
             region=img.geometry(),
             maxPixels=1e13,
-            pyramidingPolicy={".*": "MEAN"})Earth Engine image
+            pyramidingPolicy={".*": "MEAN"})
         img = ee.Image.loadGeoTIFF(f)
         
         # Set the properties
@@ -76,7 +76,7 @@ i    try:
         })
         
         # Create the export task
-        task = ee.batch.Export.image.toAsset(
+        task = ee.batch.Export.image.toAsset 
             image=img,
             description=f"Upload {basename}",
             assetId=asset.replace("\\", "/"),
