@@ -154,6 +154,7 @@ parser.add_argument('--convert-nc', dest='convert_nc', action='store_true', help
 parser.add_argument('--nc-input', dest='nc_input', default=r"D:\Lewis\Global phenology maping\Global_SIF_OCO2_MODIS_1863\data", help='Input folder containing .nc files')
 parser.add_argument('--nc-output', dest='nc_output', default=r"D:\Lewis\Global phenology maping\output_phen\sif_to_tiff", help='Output folder for GeoTIFFs')
 parser.add_argument('--nc-var', dest='nc_var', default=None, help='Variable name in the netCDF to convert (if omitted, first data var is used)')
+parser.add_argument('--write-csv', dest='write_csv', action='store_true', help='Write a template metadata CSV into the nc-output folder (SIF_OCO2_ANN_upload_metadata.csv)')
 args = parser.parse_args()
 
 # If requested, run NetCDF -> GeoTIFF conversion and exit early (skip uploads)
@@ -163,6 +164,18 @@ if args.convert_nc:
     var = args.nc_var
     print(f"Running NetCDF -> GeoTIFF conversion: {in_dir} -> {out_dir} (var={var})")
     convert_nc_to_tifs(in_dir, out_dir, var)
+    # Optionally write a template metadata CSV in the output folder
+    if args.write_csv:
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+            tif_files = sorted(glob.glob(os.path.join(out_dir, '*.tif')))
+            ids = [os.path.splitext(os.path.basename(t))[0] for t in tif_files]
+            df = pd.DataFrame({'id_no': ids, 'system:time_start': [''] * len(ids), 'system:time_end': [''] * len(ids)})
+            csv_path = os.path.join(out_dir, 'SIF_OCO2_ANN_upload_metadata.csv')
+            df.to_csv(csv_path, index=False)
+            print(f"Wrote template CSV: {csv_path} (fill in system:time_start and system:time_end)")
+        except Exception as e:
+            print_err(f"Failed to write template CSV in {out_dir}: {e}")
     print("Conversion finished. Exiting.")
     sys.exit(0)
 
