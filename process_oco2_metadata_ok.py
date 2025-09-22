@@ -11,7 +11,7 @@ files = glob.glob(os.path.join(data_dir, '*.nc'))
 print("Found files:", files)
 
 # Output CSV file
-output_file = r"D:\Lewis\Global phenology maping\output_phen\SIF_OCO2_ANN_upload_metadata.csv"
+output_file = r"D:\Lewis\Global phenology maping\output_phen\sif_to_tiff\SIF_OCO2_ANN_upload_metadata.csv"
 
 # Columns for CSV
 output_cols = ['id_no', 'system:time_start', 'system:time_end']
